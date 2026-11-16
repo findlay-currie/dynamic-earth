@@ -3384,7 +3384,7 @@
     var size = new THREE.Vector2(), dprDrop = 0;
     // still-frame refinement: once the view stops, frames with the camera nudged by a fraction of a pixel (and, on desktop, the
     // sun moved within its own disc) are averaged, which smooths every edge and gives shadows a true soft edge
-    var ACC_N = opts.refine >= 0 ? Math.min(64, opts.refine) : (small ? 8 : 24), accN = 0, sunBase = new THREE.Vector3(), sunJit = false;
+    var ACC_N = opts.refine >= 0 ? Math.min(64, opts.refine) : (small ? 8 : 16), noSunJit = false, lastMoveT = 0, lastRefT = 0, accN = 0, sunBase = new THREE.Vector3(), sunJit = false;
     var accMat = new THREE.ShaderMaterial({ vertexShader: VERT, depthTest: false, depthWrite: false, uniforms: { tNew: { value: null }, tOld: { value: null }, w: { value: 1 } },
       fragmentShader: 'uniform sampler2D tNew, tOld; uniform float w; varying vec2 vUv; void main(){ gl_FragColor = mix(texture2D(tOld, vUv), texture2D(tNew, vUv), w); }' });
     var copyMat = new THREE.ShaderMaterial({ vertexShader: VERT, depthTest: false, depthWrite: false, uniforms: { tSrc: { value: null } },
@@ -3415,7 +3415,7 @@
         accN++;
         var jx = halton(accN, 2) - 0.5, jy = halton(accN, 3) - 0.5, pe = camera.projectionMatrix.elements;
         pe[8] += jx * 2 / size.x; pe[9] += jy * 2 / size.y; camera.projectionMatrixInverse.copy(camera.projectionMatrix).invert();
-        if (!small && m.shadow > 0.6) {   // the sun's disc is 0.53 degrees across: 400 m away that is a 3.7 m circle
+        if (!small && !noSunJit && m.shadow > 0.6) {   // the sun's disc is 0.53 degrees across: 400 m away that is a 3.7 m circle
           var ra = Math.sqrt(halton(accN, 5)) * 1.85, an = halton(accN, 7) * 6.2832, sd = sunBase.clone().sub(sun.target.position).normalize();
           var ax1 = new THREE.Vector3(0, 1, 0).cross(sd).normalize(), ax2 = sd.clone().cross(ax1);
           sun.position.copy(sunBase).addScaledVector(ax1, Math.cos(an) * ra).addScaledVector(ax2, Math.sin(an) * ra); sunJit = true; renderer.shadowMap.needsUpdate = true;
@@ -3607,8 +3607,13 @@
       lastT = moved ? now : 0;
       if (moved) occDirty = true;
       else if (occDirty && S.labels) { built.roofGroup && built.roofGroup.updateMatrixWorld(); updateOcclusion(); occDirty = false; S.dirty = true; }
-      if (moved || S.dirty) { labelVisibility(cur.radius); render(false); S.dirty = false; }
-      else if (accN < ACC_N && !document.hidden) render(true);
+      if (moved || S.dirty) { labelVisibility(cur.radius); render(false); S.dirty = false; lastMoveT = now; lastRefT = 0; }
+      // refine only once the view has been still for a third of a second (not during a pause mid-drag), and back off on a slow
+      // machine: refinement frames over 60 ms drop the soft sun shadows (the costly part), over 120 ms stop it for this view
+      else if (accN < ACC_N && !document.hidden && now - lastMoveT > 330) {
+        if (lastRefT) { var dtR = now - lastRefT; if (dtR > 60 && !noSunJit) { noSunJit = true; S.dirty = true; return; } else if (dtR > 120) { accN = ACC_N; lastRefT = 0; return; } }
+        render(true); lastRefT = now;
+      }
     }
     var ro = null;
     if (window.ResizeObserver) { ro = new ResizeObserver(function () { resize(); }); ro.observe(canvas); } else window.addEventListener('resize', resize);
